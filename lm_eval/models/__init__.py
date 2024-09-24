@@ -12,6 +12,7 @@ from . import (
     neuron_optimum,
     openai_completions,
     optimum_lm,
+    semantic_decoding_llms,
     textsynth,
     vllm_causallms,
     vllm_vlms,
