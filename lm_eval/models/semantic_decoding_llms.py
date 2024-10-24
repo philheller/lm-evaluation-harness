@@ -6,24 +6,20 @@ from lm_eval.models.utils import (
     Collator,
 )
 
-import sys
 import os
 from typing import List, Dict, Union, Optional, Tuple, Literal
 from copy import deepcopy
 
-resolved_path = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../semantic_decoding/generators'))
-sys.path.append(resolved_path)
-
-from semantic import SemanticGenerationConfig
-from generator import Generator
+from semantic_decoding.generators.semantic import SemanticGenerationConfig
+from semantic_decoding.generators.generator import Generator
 from transformers import GenerationConfig, AutoConfig
 import torch
 from tqdm import tqdm
 
 eval_logger = utils.eval_logger
 
+# for defaults
 checkpoints = [
-    "gpt2",
     "EleutherAI/pythia-70m-deduped",
     "EleutherAI/pythia-160m-deduped",
     "EleutherAI/pythia-410m-deduped",
@@ -36,11 +32,13 @@ checkpoints = [
     "meta-llama/Meta-Llama-3-70B-Instruct",
     "mistralai/Mistral-7B-Instruct-v0.3",
     "mistralai/Mistral-7B-v0.3",
+    "gpt2",
 ]
 
-semantic_extractors = [
-    "dslim/distilbert-NER"
-]
+semantic_extractors = {
+    "noun_chunks": "en_core_web_sm",
+    "ner": "dslim/distilbert-NER"
+}
 
 @register_model("semantic_decoding_llm", "sem")
 class SemanticDecodingModel(LM):
@@ -55,7 +53,7 @@ class SemanticDecodingModel(LM):
         device: Optional[str] = None,
         truncation: bool = False,
         # for syntactic generation config
-        max_new_tokens: int = 8,
+        max_new_tokens: int = 4,
         num_syntactic_beams: int = 20,
         num_return_sequences: Optional[int] = None,
         do_sample: bool = False,
@@ -64,7 +62,7 @@ class SemanticDecodingModel(LM):
         repetition_penalty: Optional[float] = None,
         length_penalty: Optional[float] = None,
         # for semantic generation config
-        semantic_num_beams: int = 3,
+        semantic_num_beams: int = 4,
         semantic_num_return_sequences: int = 3,
         sem_length_penalty: Optional[int] = None,
         max_overall_tokens: Optional[int] = None,
@@ -79,6 +77,8 @@ class SemanticDecodingModel(LM):
         for key, value in kwargs.items():
             if "semantic_generator" in key:
                 semantic_generator_names.append(value)
+        if len(semantic_generator_names) == 0:
+            semantic_generator_names = [semantic_extractors["noun_chunks"]]
         if device is None:
             # detect device
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -247,6 +247,8 @@ class SemanticDecodingModel(LM):
             for context, decoded_res in zip(contexts, entire_decoded_res):
                 # discard context + left-padding toks if using causal decoder-only LM
                 generated_res = decoded_res.split(context)[1:]
+                # in case the context was repeated (which would result in a list of generated res above, merge here)
+                generated_res = context.join(generated_res)
 
                 # check if until was reached prior
                 for term in until:
