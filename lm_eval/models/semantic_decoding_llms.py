@@ -49,7 +49,7 @@ class SemanticDecodingModel(LM):
         self,
         model_name: Union[int, str] = 0,
         batch_size: Union[int, str] = 1,
-        max_length: Optional[int] = None,
+        max_length: Optional[int] = None, # this is about the max length a model can work with
         device: Optional[str] = None,
         truncation: bool = False,
         # for syntactic generation config
@@ -63,10 +63,10 @@ class SemanticDecodingModel(LM):
         length_penalty: Optional[float] = None,
         # for semantic generation config
         semantic_num_beams: int = 4,
-        semantic_num_return_sequences: int = 3,
+        semantic_num_return_sequences: Optional[int] = None,
         sem_length_penalty: Optional[int] = None,
         max_overall_tokens: Optional[int] = None,
-        max_overall_generated_tokens: Optional[int] = 256,
+        max_overall_generated_tokens: Optional[int] = None,
         best_sequence_strategy: Literal["syntactic_sequence_score", "semantic_sequence_score"] = "syntactic_sequence_score",
         **kwargs
     ):
