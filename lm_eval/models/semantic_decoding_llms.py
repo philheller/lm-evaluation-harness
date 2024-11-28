@@ -68,6 +68,8 @@ class SemanticDecodingModel(LM):
         max_overall_tokens: Optional[int] = None,
         max_overall_generated_tokens: Optional[int] = None,
         best_sequence_strategy: Literal["syntactic_sequence_score", "semantic_sequence_score"] = "syntactic_sequence_score",
+        # use same setup but for regular decoding
+        use_regular_decoding: bool = False,
         **kwargs
     ):
         assert isinstance(device, (str, type(None)))
@@ -85,6 +87,7 @@ class SemanticDecodingModel(LM):
         self.device = device
         if isinstance(model_name, int):
             model_name = checkpoints[model_name]
+        self.model_name = model_name
         generator = Generator(
             model_name,
             semantic_generator_names,
@@ -94,6 +97,10 @@ class SemanticDecodingModel(LM):
         self.generator = generator
         self.tokenizer = generator.syntactic_generator.tokenizer
         self.model = generator.syntactic_generator.model
+        # ? to have identical treatment for regular decoding, flip switch with this argument
+        self.use_regular_decoding = use_regular_decoding
+        if use_regular_decoding:
+            self.generator = None
         self._model = self.model
         self._max_length = max_length # manually set max_length
         # since using internal device_map = "auto", no need for accelerate here
@@ -114,6 +121,9 @@ class SemanticDecodingModel(LM):
         # Filter out None values
         syntactic_config_args = {k: v for k, v in syntactic_config_args.items() if v is not None}
         self.syntactic_generation_config = GenerationConfig(**syntactic_config_args)
+        if use_regular_decoding:
+            self.syntactic_generation_config.output_scores = True
+            self.syntactic_generation_config.return_dict_in_generate = True
 
         # semantic generation config
         semantic_generation_config = {
@@ -125,6 +135,9 @@ class SemanticDecodingModel(LM):
         }
         semantic_generation_config = {k: v for k, v in semantic_generation_config.items() if v is not None}
         self.semantic_generation_config = SemanticGenerationConfig(**semantic_generation_config)
+        if use_regular_decoding:
+            self.syntactic_generation_config.max_length = self.semantic_generation_config.max_overall_tokens
+            self.syntactic_generation_config.max_new_tokens = self.semantic_generation_config.max_overall_generated_tokens
         self.best_sequence_strategy = best_sequence_strategy
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
@@ -177,7 +190,7 @@ class SemanticDecodingModel(LM):
             #   padded context length. this is useful to simplify the batching logic and more importantly to make
             #   automatic adaptive batches much much easier to implement
             # - any OOMs will happen right away rather than near the end
-            toks = self.generator.syntactic_generator.tokenizer(req[0]).input_ids
+            toks = self.tokenizer(req[0]).input_ids
             return -len(toks), req[0]
 
         pbar = tqdm(
@@ -197,7 +210,7 @@ class SemanticDecodingModel(LM):
             contexts, all_gen_kwargs = zip(*chunk)
 
             gen_kwargs = all_gen_kwargs[0] # we are only batching with size 1 anyways
-            max_gen_toks = gen_kwargs.get("max_gen_toks", self.max_gen_toks)
+            max_gen_toks = gen_kwargs.get("max_gen_toks", self.max_gen_toks) # max tokens to generate
             until = gen_kwargs.get("until", None)
             if isinstance(until, str):
                 until = [until]
@@ -221,26 +234,56 @@ class SemanticDecodingModel(LM):
                 truncation=self.truncation
             )
 
-            results = self.generator.generate(
-                contexts,
-                self.semantic_generation_config,
-                self.syntactic_generation_config
-            )
+            if self.use_regular_decoding:
+                # as done in semantic decoding
+                model_inputs = self.tokenizer(
+                    contexts,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                ).to(self.device)
+                results = self.model.generate(
+                    **model_inputs,
+                    generation_config=self.syntactic_generation_config
+                )
+            else:
+                results = self.generator.generate(
+                    contexts,
+                    self.semantic_generation_config,
+                    self.syntactic_generation_config
+                )
 
-            sequences = results["syntactic_sequences"]
+            sequences = None
+            if self.use_regular_decoding:
+                sequences = results["sequences"]
+            else:
+                sequences = results["syntactic_sequences"]
             
-            if self.best_sequence_strategy == "syntactic_sequence_score":
-                syntactic_transition_scores = results["syntactic_transition_scores"]
-                syntactic_sequence_scores = syntactic_transition_scores.sum(dim=1)
-                best_sequ_index = syntactic_sequence_scores.argmax().item()
-                sequence = sequences[best_sequ_index]
-            elif self.best_sequence_strategy == "semantic_sequence_score":
-                semantic_scores = results["semantic_scores"]
-                best_sequ_index = semantic_scores.argmax().item()
-                # could be an alternative
+            sequence = None
+            if self.use_regular_decoding:
+                sequence = sequences[0]
+            else:
+                if self.best_sequence_strategy == "syntactic_sequence_score":
+                    syntactic_transition_scores = results["syntactic_transition_scores"]
+                    syntactic_sequence_scores = torch.div(
+                        syntactic_transition_scores.sum(-1),
+                        torch.pow(
+                            syntactic_transition_scores.shape[-1] - (syntactic_transition_scores >= 0).sum(-1), # length of generated sequences
+                            self.syntactic_generation_config.length_penalty # length penalty
+                        )
+                    )
+
+                    best_sequ_index = syntactic_sequence_scores.argmax().item()
+                    sequence = sequences[best_sequ_index]
+                elif self.best_sequence_strategy == "semantic_sequence_score":
+                    semantic_sequences_scores = results["semantic_sequences_scores"]
+                    best_sequ_index = semantic_sequences_scores.argmax().item()
+                    # could be an alternative
+                    # ! could also be done in the future
+                    raise NotImplementedError("This feature is not fully implemented yet.")
             
             # decode the sequences
-            entire_decoded_res = self.generator.syntactic_generator.tokenizer.batch_decode(
+            entire_decoded_res = self.tokenizer.batch_decode(
                 [sequence]
             )
             
