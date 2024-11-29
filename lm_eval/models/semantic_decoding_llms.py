@@ -251,17 +251,14 @@ class SemanticDecodingModel(LM):
 
             if self.use_regular_decoding:
                 this_runs_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
-                this_runs_syntactic_generation_config.max_length = max_gen_toks
+                this_runs_syntactic_generation_config.max_new_tokens = max_gen_toks
                 # as done in semantic decoding
-                print("Moving the model_inputs to ", self.model.device)
-                print("Maybe it should be on ", self.first_device)
                 model_inputs = self.tokenizer(
                     contexts,
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
                 ).to(self.model.device)
-                print("Successfully computed reg bs")
                 results = self.model.generate(
                     **model_inputs,
                     generation_config=this_runs_syntactic_generation_config
