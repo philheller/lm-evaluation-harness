@@ -6,13 +6,12 @@ from lm_eval.models.utils import (
     Collator,
 )
 
-import os
 from typing import List, Dict, Union, Optional, Tuple, Literal
 from copy import deepcopy
 
 from semantic_decoding.generators.semantic import SemanticGenerationConfig
 from semantic_decoding.generators.generator import Generator
-from transformers import GenerationConfig, AutoConfig
+from transformers import GenerationConfig
 import torch
 from tqdm import tqdm
 
@@ -139,6 +138,13 @@ class SemanticDecodingModel(LM):
             self.syntactic_generation_config.max_length = self.semantic_generation_config.max_overall_tokens
             self.syntactic_generation_config.max_new_tokens = self.semantic_generation_config.max_overall_generated_tokens
         self.best_sequence_strategy = best_sequence_strategy
+        eval_logger.info("Semantic Generation Config:")
+        eval_logger.info(self.semantic_generation_config)
+        eval_logger.info("Syntactic Generation Config:")
+        eval_logger.info(self.syntactic_generation_config)
+        # check that not too long generation is possible
+        if self.max_length < self.semantic_generation_config.max_overall_tokens:
+            self.semantic_generation_config.max_overall_tokens = self.max_length
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         raise NotImplementedError(
@@ -168,6 +174,9 @@ class SemanticDecodingModel(LM):
         )
         
         if left_truncate_len:
+            original_length = encoded_input["input_ids"].shape[1]
+            if left_truncate_len < original_length:
+                eval_logger.warning(f"ContextLong: Context longer than permitted. Shortening from {original_length} to {left_truncate_len}")
             encoded_input["input_ids"] = encoded_input["input_ids"][:, -left_truncate_len:]
             encoded_input["attention_mask"] = encoded_input["attention_mask"][:, -left_truncate_len:]
         
@@ -234,7 +243,13 @@ class SemanticDecodingModel(LM):
                 truncation=self.truncation
             )
 
+            # adapt configs to limit to a certain amount of tokens
+            this_runs_semantic_generation_config = deepcopy(self.semantic_generation_config)
+            this_runs_semantic_generation_config.max_overall_generated_tokens = max_gen_toks
+
             if self.use_regular_decoding:
+                this_runs_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
+                this_runs_syntactic_generation_config.max_length = max_gen_toks
                 # as done in semantic decoding
                 model_inputs = self.tokenizer(
                     contexts,
@@ -244,12 +259,12 @@ class SemanticDecodingModel(LM):
                 ).to(self.device)
                 results = self.model.generate(
                     **model_inputs,
-                    generation_config=self.syntactic_generation_config
+                    generation_config=this_runs_syntactic_generation_config
                 )
             else:
                 results = self.generator.generate(
                     contexts,
-                    self.semantic_generation_config,
+                    this_runs_semantic_generation_config,
                     self.syntactic_generation_config
                 )
 
