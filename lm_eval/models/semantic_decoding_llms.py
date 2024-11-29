@@ -6,6 +6,7 @@ from lm_eval.models.utils import (
     Collator,
 )
 
+import sys
 from typing import List, Dict, Union, Optional, Tuple, Literal
 from copy import deepcopy
 
@@ -96,6 +97,7 @@ class SemanticDecodingModel(LM):
         self.generator = generator
         self.tokenizer = generator.syntactic_generator.tokenizer
         self.model = generator.syntactic_generator.model
+        self.first_device = generator.first_device
         # ? to have identical treatment for regular decoding, flip switch with this argument
         self.use_regular_decoding = use_regular_decoding
         if use_regular_decoding:
@@ -138,13 +140,13 @@ class SemanticDecodingModel(LM):
             self.syntactic_generation_config.max_length = self.semantic_generation_config.max_overall_tokens
             self.syntactic_generation_config.max_new_tokens = self.semantic_generation_config.max_overall_generated_tokens
         self.best_sequence_strategy = best_sequence_strategy
+        # check that not too long generation is possible
+        if self.max_length < self.semantic_generation_config.max_overall_tokens:
+            self.semantic_generation_config.max_overall_tokens = self.max_length
         eval_logger.info("Semantic Generation Config:")
         eval_logger.info(self.semantic_generation_config)
         eval_logger.info("Syntactic Generation Config:")
         eval_logger.info(self.syntactic_generation_config)
-        # check that not too long generation is possible
-        if self.max_length < self.semantic_generation_config.max_overall_tokens:
-            self.semantic_generation_config.max_overall_tokens = self.max_length
 
     def loglikelihood(self, requests: list[Instance]) -> list[tuple[float, bool]]:
         raise NotImplementedError(
@@ -251,12 +253,15 @@ class SemanticDecodingModel(LM):
                 this_runs_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
                 this_runs_syntactic_generation_config.max_length = max_gen_toks
                 # as done in semantic decoding
+                print("Moving the model_inputs to ", self.model.device)
+                print("Maybe it should be on ", self.first_device)
                 model_inputs = self.tokenizer(
                     contexts,
                     return_tensors="pt",
                     padding=True,
                     truncation=True,
-                ).to(self.device)
+                ).to(self.model.device)
+                print("Successfully computed reg bs")
                 results = self.model.generate(
                     **model_inputs,
                     generation_config=this_runs_syntactic_generation_config
@@ -315,6 +320,7 @@ class SemanticDecodingModel(LM):
 
                 res.append(generated_res)
                 pbar.update(1)
+                sys.stdout.flush()
         
         res = re_ords.get_original(res)
 
