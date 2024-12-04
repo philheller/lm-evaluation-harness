@@ -70,6 +70,7 @@ class SemanticDecodingModel(LM):
         best_sequence_strategy: Literal["syntactic_sequence_score", "semantic_sequence_score"] = "syntactic_sequence_score",
         # use same setup but for regular decoding
         use_regular_decoding: bool = False,
+        lim_sg_to_n: Optional[int] = 200,
         **kwargs
     ):
         assert isinstance(device, (str, type(None)))
@@ -133,6 +134,7 @@ class SemanticDecodingModel(LM):
             "length_penalty": sem_length_penalty,
             "max_overall_tokens": max_overall_tokens,
             "max_overall_generated_tokens": max_overall_generated_tokens,
+            "limit_semantic_generation_to_n_chars": lim_sg_to_n,
         }
         semantic_generation_config = {k: v for k, v in semantic_generation_config.items() if v is not None}
         self.semantic_generation_config = SemanticGenerationConfig(**semantic_generation_config)
