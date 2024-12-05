@@ -194,6 +194,8 @@ class SemanticDecodingModel(LM):
 
     def generate_until(self, requests: list[Instance], disable_tqdm: bool = False) -> list[str]:
         res = []
+        oom_errors = 0
+        other_errors = 0
 
         def _collate(req: Tuple[str, dict]):
             """Defines the key for the sorted method"""
@@ -252,31 +254,67 @@ class SemanticDecodingModel(LM):
             this_runs_semantic_generation_config.max_overall_generated_tokens = max_gen_toks
 
             if self.use_regular_decoding:
-                this_runs_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
-                this_runs_syntactic_generation_config.max_new_tokens = max_gen_toks
-                # as done in semantic decoding
-                model_inputs = self.tokenizer(
-                    contexts,
-                    return_tensors="pt",
-                    padding=True,
-                    truncation=True,
-                ).to(self.model.device)
-                results = self.model.generate(
-                    **model_inputs,
-                    generation_config=this_runs_syntactic_generation_config
-                )
+                try:
+                    this_runs_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
+                    this_runs_syntactic_generation_config.max_new_tokens = max_gen_toks
+                    # as done in semantic decoding
+                    model_inputs = self.tokenizer(
+                        contexts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                    ).to(self.model.device)
+                    results = self.model.generate(
+                        **model_inputs,
+                        generation_config=this_runs_syntactic_generation_config
+                    )
+                except torch.cuda.OutOfMemoryError as e:
+                    eval_logger.error(f"CUDA OOM error occured [Prompt lenght: {len(contexts[0])}]. Skipping this prompt.")
+                    eval_logger.error(e)
+                    res.append("<CUDA_OOM>")
+                    oom_errors += 1
+                    torch.cuda.empty_cache()
+                    pbar.update(1)
+                    continue
+                except Exception as e:
+                    eval_logger.error(f"An error occured: {e}")
+                    error_name = type(e).__name__
+                    res.append(f"<{error_name}>")
+                    other_errors += 1
+                    pbar.update(1)
+                    continue
             else:
-                results = self.generator.generate(
-                    contexts,
-                    this_runs_semantic_generation_config,
-                    self.syntactic_generation_config
-                )
+                try:
+                    self.generator.turn_on_time_reports()
+                    # this_runs_semantic_generation_config.max_overall_generated_tokens = 20
+                    results = self.generator.generate(
+                        contexts,
+                        this_runs_semantic_generation_config,
+                        self.syntactic_generation_config
+                    )
+                except torch.cuda.OutOfMemoryError as e:
+                    eval_logger.error(f"CUDA OOM error occured [Prompt lenght: {len(contexts[0])}]. Skipping this prompt.")
+                    eval_logger.error(e)
+                    res.append("<CUDA_OOM>")
+                    oom_errors += 1
+                    torch.cuda.empty_cache()
+                    pbar.update(1)
+                    continue
+                except Exception as e:
+                    eval_logger.error(f"An error occured: {e}")
+                    error_name = type(e).__name__
+                    res.append(f"<{error_name}>")
+                    other_errors += 1
+                    pbar.update(1)
+                    continue
 
             sequences = None
             if self.use_regular_decoding:
                 sequences = results["sequences"]
+                tqdm.write(f"Length of the sequences: {sequences.shape}")
             else:
                 sequences = results["syntactic_sequences"]
+                tqdm.write(f"Length of the sequences: {sequences.shape}")
             
             sequence = None
             if self.use_regular_decoding:
@@ -324,6 +362,9 @@ class SemanticDecodingModel(LM):
         res = re_ords.get_original(res)
 
         pbar.close()
+        eval_logger.info(f"OOM errors: {oom_errors}/{len(requests)} [{oom_errors/len(requests)*100:.2f}%]")
+        eval_logger.info(f"Other errors: {other_errors}/{len(requests)} [{other_errors/len(requests)*100:.2f}%]")
+        eval_logger.info(f"Total errors: {oom_errors + other_errors}/{len(requests)} [{(oom_errors + other_errors)/len(requests)*100:.2f}%]")
 
         return res
             
