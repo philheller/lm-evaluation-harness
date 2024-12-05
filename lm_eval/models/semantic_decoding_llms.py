@@ -285,12 +285,14 @@ class SemanticDecodingModel(LM):
                     continue
             else:
                 try:
+                    # ? better use deepcopy; that way the original config is not modified in nested bs
+                    this_syntactic_generation_config = deepcopy(self.syntactic_generation_config)
                     self.generator.turn_on_time_reports()
                     # this_runs_semantic_generation_config.max_overall_generated_tokens = 20
                     results = self.generator.generate(
                         contexts,
                         this_runs_semantic_generation_config,
-                        self.syntactic_generation_config
+                        this_syntactic_generation_config
                     )
                 except torch.cuda.OutOfMemoryError as e:
                     eval_logger.error(f"CUDA OOM error occured [Prompt lenght: {len(contexts[0])}]. Skipping this prompt.")
